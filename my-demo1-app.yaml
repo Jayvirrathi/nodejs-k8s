@@ -1,0 +1,81 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: my-demo1-app
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: my-demo1-app
+  template:
+    metadata:
+      labels:
+        app: my-demo1-app
+    spec:
+      containers:
+      - name: dockerdemo-app
+        image: dockerdemo-app
+        imagePullPolicy: Never
+        ports:
+        - containerPort: 3000
+          name: http
+        env:
+        - name: MONGO_URL
+          value: "mongodb://mongo:27017/nodedb"
+        resources:
+          requests:
+            cpu: "100m"
+          limits:
+            cpu: "500m"
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: my-demo1-app
+  labels:
+    app: my-demo1-app
+  annotations:
+    prometheus.io/scrape: "true"
+    prometheus.io/port: "3000"
+    prometheus.io/path: "/metrics"
+spec:
+  type: NodePort
+  selector:
+    app: my-demo1-app
+  ports:
+  - name: metrics          # single port; Prometheus can match this name if needed
+    port: 3000
+    targetPort: 3000
+    nodePort: 31010
+---
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: my-demo1-app-hpa
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: my-demo1-app
+  minReplicas: 1
+  maxReplicas: 5
+  metrics:
+  - type: Resource
+    resource:
+      name: cpu
+      target:
+        type: Utilization
+        averageUtilization: 50
+  behavior:
+    scaleDown:
+      stabilizationWindowSeconds: 60
+      policies:
+      - type: Percent
+        value: 100
+        periodSeconds: 15
+    scaleUp:
+      stabilizationWindowSeconds: 0
+      policies:
+      - type: Percent
+        value: 100
+        periodSeconds: 15
