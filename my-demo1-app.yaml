@@ -12,6 +12,7 @@ spec:
       labels:
         app: my-demo1-app
     spec:
+      terminationGracePeriodSeconds: 30
       containers:
       - name: dockerdemo-app
         image: dockerdemo-app
@@ -22,6 +23,31 @@ spec:
         env:
         - name: MONGO_URL
           value: "mongodb://mongo:27017/nodedb"
+        # Health probes
+        startupProbe:
+          httpGet:
+            path: /healthz
+            port: 3000
+          failureThreshold: 30
+          periodSeconds: 2
+          timeoutSeconds: 2
+        readinessProbe:
+          httpGet:
+            path: /ready
+            port: 3000
+          initialDelaySeconds: 5
+          periodSeconds: 5
+          timeoutSeconds: 2
+          successThreshold: 1
+          failureThreshold: 6
+        livenessProbe:
+          httpGet:
+            path: /healthz
+            port: 3000
+          initialDelaySeconds: 10
+          periodSeconds: 10
+          timeoutSeconds: 2
+          failureThreshold: 3
         resources:
           requests:
             cpu: "100m"
@@ -43,7 +69,7 @@ spec:
   selector:
     app: my-demo1-app
   ports:
-  - name: metrics          # single port; Prometheus can match this name if needed
+  - name: metrics
     port: 3000
     targetPort: 3000
     nodePort: 31010

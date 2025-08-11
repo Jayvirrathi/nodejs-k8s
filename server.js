@@ -94,6 +94,18 @@ app.get('/', (req, res) => {
   res.send('Hello, World!');
 });
 
+app.get('/healthz', (_req, res) => res.status(200).send('ok'));
+
+app.get('/ready', async (_req, res) => {
+  try {
+    // await mongoose.connection.db.admin().ping();
+    res.status(200).send('ready');
+  } catch (err) {
+    res.status(503).send('not ready');
+  }
+});
+
+
 // Simple model
 const User = mongoose.model('User', new mongoose.Schema({ name: String }));
 
