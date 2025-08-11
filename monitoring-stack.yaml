@@ -1,4 +1,63 @@
 # =========================
+# PERSISTENT VOLUME CLAIMS
+# (adjust storageClassName if needed)
+# =========================
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: loki-pvc
+  namespace: default
+spec:
+  accessModes: ["ReadWriteOnce"]
+  resources:
+    requests:
+      storage: 10Gi
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: prometheus-pvc
+  namespace: default
+spec:
+  accessModes: ["ReadWriteOnce"]
+  resources:
+    requests:
+      storage: 20Gi
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: tempo-pvc
+  namespace: default
+spec:
+  accessModes: ["ReadWriteOnce"]
+  resources:
+    requests:
+      storage: 10Gi
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: mimir-pvc
+  namespace: default
+spec:
+  accessModes: ["ReadWriteOnce"]
+  resources:
+    requests:
+      storage: 30Gi
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: grafana-pvc
+  namespace: default
+spec:
+  accessModes: ["ReadWriteOnce"]
+  resources:
+    requests:
+      storage: 5Gi
+
+# =========================
 # LOKI (CONFIG + DEPLOY + SVC)
 # =========================
 apiVersion: v1
@@ -114,7 +173,8 @@ spec:
         configMap:
           name: loki-config
       - name: loki-data
-        emptyDir: {}   # swap for a PVC in production
+        persistentVolumeClaim:
+          claimName: loki-pvc
 ---
 apiVersion: v1
 kind: Service
@@ -132,7 +192,7 @@ spec:
     nodePort: 30100
 
 # =========================
-# PROMETHEUS (RBAC + DEPLOY + SVC) — unchanged
+# PROMETHEUS (RBAC + DEPLOY + SVC)
 # =========================
 ---
 apiVersion: v1
@@ -178,6 +238,10 @@ data:
     global:
       scrape_interval: 15s
       evaluation_interval: 15s
+
+    # Send metrics to Mimir (Prometheus-compatible remote_write).
+    remote_write:
+      - url: http://mimir.default.svc.cluster.local:9009/api/v1/push
 
     scrape_configs:
       - job_name: 'kubernetes-service-endpoints'
@@ -278,7 +342,8 @@ spec:
         configMap:
           name: prometheus-config
       - name: data
-        emptyDir: {}
+        persistentVolumeClaim:
+          claimName: prometheus-pvc
 ---
 apiVersion: v1
 kind: Service
@@ -296,6 +361,347 @@ spec:
     nodePort: 30090
 
 # =========================
+# TEMPO (CONFIG + DEPLOY + SVC)
+# =========================
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: tempo-config
+  namespace: default
+data:
+  tempo.yaml: |
+    server:
+      http_listen_port: 3200
+      grpc_listen_port: 9095
+
+    distributor:
+      receivers:
+        otlp:
+          protocols:
+            grpc:
+            http:
+
+    ingester:
+      max_block_duration: 5m
+
+    compactor:
+      shared_store: filesystem
+      working_directory: /var/tempo/blocks
+
+    storage:
+      trace:
+        backend: local
+        local:
+          path: /var/tempo/traces
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: tempo
+  namespace: default
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: tempo
+  template:
+    metadata:
+      labels:
+        app: tempo
+    spec:
+      securityContext:
+        runAsNonRoot: true
+      containers:
+      - name: tempo
+        image: grafana/tempo:2.4.1
+        args:
+          - -config.file=/etc/tempo/tempo.yaml
+        ports:
+        - containerPort: 3200
+          name: http
+        - containerPort: 9095
+          name: grpc
+        readinessProbe:
+          httpGet:
+            path: /ready
+            port: http
+          initialDelaySeconds: 10
+          periodSeconds: 10
+        livenessProbe:
+          httpGet:
+            path: /ready
+            port: http
+          initialDelaySeconds: 10
+          periodSeconds: 10
+        resources:
+          requests:
+            cpu: "100m"
+            memory: "256Mi"
+          limits:
+            cpu: "500m"
+            memory: "512Mi"
+        volumeMounts:
+        - name: tempo-config
+          mountPath: /etc/tempo
+        - name: tempo-data
+          mountPath: /var/tempo
+      volumes:
+      - name: tempo-config
+        configMap:
+          name: tempo-config
+      - name: tempo-data
+        persistentVolumeClaim:
+          claimName: tempo-pvc
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: tempo
+  namespace: default
+spec:
+  type: NodePort
+  selector:
+    app: tempo
+  ports:
+  - name: http
+    port: 3200
+    targetPort: 3200
+    nodePort: 30200
+  - name: grpc
+    port: 9095
+    targetPort: 9095
+    nodePort: 30201
+
+# =========================
+# MIMIR (CONFIG + DEPLOY + SVC)
+# =========================
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: mimir-config
+  namespace: default
+data:
+  mimir.yaml: |
+    multitenancy_enabled: false
+    server:
+      http_listen_port: 9009
+    blocks_storage:
+      backend: filesystem
+      filesystem:
+        dir: /data/mimir/tsdb
+    ruler_storage:
+      backend: filesystem
+      filesystem:
+        dir: /data/mimir/rules
+    compactor:
+      data_dir: /data/mimir/compactor
+    ingester:
+      lifecycler:
+        ring:
+          kvstore:
+            store: inmemory
+          replication_factor: 1
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: mimir
+  namespace: default
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: mimir
+  template:
+    metadata:
+      labels:
+        app: mimir
+    spec:
+      securityContext:
+        runAsNonRoot: true
+      containers:
+      - name: mimir
+        image: grafana/mimir:2.12.0
+        args:
+          - -config.file=/etc/mimir/mimir.yaml
+        ports:
+        - containerPort: 9009
+          name: http
+        readinessProbe:
+          httpGet:
+            path: /ready
+            port: http
+          initialDelaySeconds: 10
+          periodSeconds: 10
+        livenessProbe:
+          httpGet:
+            path: /ready
+            port: http
+          initialDelaySeconds: 10
+          periodSeconds: 10
+        resources:
+          requests:
+            cpu: "100m"
+            memory: "256Mi"
+          limits:
+            cpu: "500m"
+            memory: "1Gi"
+        volumeMounts:
+        - name: mimir-config
+          mountPath: /etc/mimir
+        - name: mimir-data
+          mountPath: /data/mimir
+      volumes:
+      - name: mimir-config
+        configMap:
+          name: mimir-config
+      - name: mimir-data
+        persistentVolumeClaim:
+          claimName: mimir-pvc
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: mimir
+  namespace: default
+spec:
+  type: NodePort
+  selector:
+    app: mimir
+  ports:
+  - name: http
+    port: 9009
+    targetPort: 9009
+    nodePort: 30099
+
+# =========================
+# OPENTELEMETRY COLLECTOR (CONFIG + DEPLOY + SVC)
+# Receives OTLP from apps and forwards:
+# - traces -> Tempo (otlp grpc)
+# - logs   -> Loki (loki exporter)
+# - metrics-> Mimir (prometheusremotewrite)
+# =========================
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: otel-collector-config
+  namespace: default
+data:
+  otel-collector-config.yaml: |
+    receivers:
+      otlp:
+        protocols:
+          grpc: { endpoint: 0.0.0.0:4317 }
+          http: { endpoint: 0.0.0.0:4318 }
+    processors:
+      batch: {}
+      memory_limiter:
+        check_interval: 5s
+        limit_mib: 512
+        spike_limit_mib: 256
+      resource:
+        attributes:
+          - key: k8s.cluster.name
+            action: upsert
+            value: demo-cluster
+    exporters:
+      otlp/tempo:
+        endpoint: tempo.default.svc.cluster.local:9095
+        tls: { insecure: true }
+      loki:
+        endpoint: http://loki.default.svc.cluster.local:3100/loki/api/v1/push
+        labels:
+          attributes:
+            # promote common log attributes to labels
+            service.name: service
+            k8s.namespace.name: namespace
+            k8s.pod.name: pod
+            k8s.container.name: container
+        # optional: tenant ID if using multi-tenancy
+        # tenant_id: "tenant-1"
+      prometheusremotewrite/mimir:
+        endpoint: http://mimir.default.svc.cluster.local:9009/api/v1/push
+        tls: { insecure: true }
+    service:
+      pipelines:
+        traces:
+          receivers: [otlp]
+          processors: [memory_limiter, batch, resource]
+          exporters: [otlp/tempo]
+        metrics:
+          receivers: [otlp]
+          processors: [memory_limiter, batch, resource]
+          exporters: [prometheusremotewrite/mimir]
+        logs:
+          receivers: [otlp]
+          processors: [memory_limiter, batch, resource]
+          exporters: [loki]
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: otel-collector
+  namespace: default
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: otel-collector
+  template:
+    metadata:
+      labels:
+        app: otel-collector
+    spec:
+      containers:
+      - name: otel-collector
+        image: otel/opentelemetry-collector-contrib:0.103.0
+        args:
+          - --config=/etc/otelcol/otel-collector-config.yaml
+        ports:
+        - containerPort: 4317
+          name: otlp-grpc
+        - containerPort: 4318
+          name: otlp-http
+        readinessProbe:
+          httpGet: { path: /, port: 13133 }
+          initialDelaySeconds: 10
+          periodSeconds: 10
+        livenessProbe:
+          httpGet: { path: /, port: 13133 }
+          initialDelaySeconds: 10
+          periodSeconds: 10
+        resources:
+          requests: { cpu: "100m", memory: "256Mi" }
+          limits: { cpu: "500m", memory: "512Mi" }
+        volumeMounts:
+        - name: otel-config
+          mountPath: /etc/otelcol
+      volumes:
+      - name: otel-config
+        configMap:
+          name: otel-collector-config
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: otel-collector
+  namespace: default
+spec:
+  selector:
+    app: otel-collector
+  ports:
+  - name: otlp-grpc
+    port: 4317
+    targetPort: 4317
+  - name: otlp-http
+    port: 4318
+    targetPort: 4318
+  type: ClusterIP
+
+# =========================
 # GRAFANA (PROVISIONED DATASOURCES + DEPLOY + SVC)
 # =========================
 ---
@@ -307,7 +713,7 @@ metadata:
   labels:
     grafana_datasource: "1"
 data:
-  prometheus-datasource.yaml: |
+  prometheus-and-loki.yaml: |
     apiVersion: 1
     datasources:
     - name: Prometheus
@@ -323,6 +729,18 @@ data:
       url: http://loki.default.svc.cluster.local:3100
       jsonData:
         maxLines: 1000
+  tempo-and-mimir.yaml: |
+    apiVersion: 1
+    datasources:
+    - name: Tempo
+      type: tempo
+      access: proxy
+      url: http://tempo.default.svc.cluster.local:3200
+    - name: Mimir
+      # Grafana uses the Prometheus data source type for Mimir's query-frontend
+      type: prometheus
+      access: proxy
+      url: http://mimir.default.svc.cluster.local:9009
 ---
 apiVersion: apps/v1
 kind: Deployment
@@ -369,10 +787,15 @@ spec:
         volumeMounts:
         - name: grafana-datasources
           mountPath: /etc/grafana/provisioning/datasources
+        - name: grafana-data
+          mountPath: /var/lib/grafana
       volumes:
       - name: grafana-datasources
         configMap:
           name: grafana-datasources
+      - name: grafana-data
+        persistentVolumeClaim:
+          claimName: grafana-pvc
 ---
 apiVersion: v1
 kind: Service
