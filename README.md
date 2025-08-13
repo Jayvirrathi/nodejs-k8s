@@ -2,7 +2,10 @@
 
 ## Docker Compose Build
 ```bash
-docker-compose up --build
+docker compose up --build
+
+#dev
+docker compose -f docker-compose-dev.yml up --build
 ```
 
 ## Setup
