@@ -96,6 +96,9 @@ app.get('/', (req, res) => {
 
 app.get('/healthz', (_req, res) => res.status(200).send('ok'));
 
+// test fail
+// app.get('/healthz', (_req, res) => res.status(500).send('ok'));
+
 app.get('/ready', async (_req, res) => {
   try {
     // await mongoose.connection.db.admin().ping();
